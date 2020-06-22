@@ -92,7 +92,8 @@ class Agent():
         """
         states, actions, rewards, next_states, dones = experiences
 
-        Qtargets = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
+        ids = self.qnetwork_local(next_states).detach().argmax(1).long()
+        Qtargets = self.qnetwork_target(next_states).detach().gather(1, ids.view(-1,1))
         y = rewards + (gamma * Qtargets * (1 - dones))
 
         Qlocal = self.qnetwork_local(states).gather(1, actions)#expected values
