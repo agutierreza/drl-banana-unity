@@ -21,6 +21,7 @@ GAMMA = 0.99            # discount factor
 TAU = 1e-3              # for soft update of target parameters
 LR = 5e-4               # learning rate 
 UPDATE_EVERY = 4        # how often to update the network
+FACTOR_A = 0.5
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -50,9 +51,15 @@ class Agent():
         # Initialize time step (for updating every UPDATE_EVERY steps)
         self.t_step = 0
     
-    def step(self, state, action, reward, next_state, done):
+    def step(self, state, action, reward, next_state, done, eps):
+        
+        #Calculate error
+        Qtarget = self.qnetwork_target(torch.Tensor(next_state)).detach().max()
+        y = reward + (GAMMA * Qtarget * (1 - done))
+        Qlocal = self.qnetwork_local(torch.Tensor(state)).detach()[action]
+        TDerror = np.abs(np.array(y-Qlocal)) + 0.001
         # Save experience in replay memory
-        self.memory.add(state, action, reward, next_state, done)
+        self.memory.add(state, action, reward, next_state, done, TDerror)
         
         # Learn every UPDATE_EVERY time steps.
         self.t_step = (self.t_step + 1) % UPDATE_EVERY
@@ -60,7 +67,8 @@ class Agent():
             # If enough samples are available in memory, get random subset and learn
             if len(self.memory) > BATCH_SIZE:
                 experiences = self.memory.sample()
-                self.learn(experiences, GAMMA)
+                mem_size = len(self.memory)
+                self.learn(experiences, GAMMA, mem_size, eps)
 
     def act(self, state, eps=0.):
         """Returns actions for given state as per current policy.
@@ -82,7 +90,7 @@ class Agent():
         else:
             return random.choice(np.arange(self.action_size))
 
-    def learn(self, experiences, gamma):
+    def learn(self, experiences, gamma, mem_size, eps):
         """Update value parameters using given batch of experience tuples.
 
         Params
@@ -90,15 +98,19 @@ class Agent():
             experiences (Tuple[torch.Variable]): tuple of (s, a, r, s', done) tuples 
             gamma (float): discount factor
         """
-        states, actions, rewards, next_states, dones = experiences
-
+        states, actions, rewards, next_states, dones, TDerrors = experiences
+        TDerrors = np.array(TDerrors)
+        probs = TDerrors**FACTOR_A / np.sum(TDerrors**FACTOR_A)
+        beta = (1-eps)
+        
         ids = self.qnetwork_local(next_states).detach().argmax(1).long()
         Qtargets = self.qnetwork_target(next_states).detach().gather(1, ids.view(-1,1))
         y = rewards + (gamma * Qtargets * (1 - dones))
 
-        Qlocal = self.qnetwork_local(states).gather(1, actions)#expected values
+        Qlocal = self.qnetwork_local(states).gather(1, actions)
 
-        loss = F.mse_loss(y, Qlocal)
+        weights = torch.Tensor((BATCH_SIZE*probs)**(-beta))
+        loss = F.mse_loss(weights*y, weights*Qlocal)
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -136,25 +148,30 @@ class ReplayBuffer:
         self.action_size = action_size
         self.memory = deque(maxlen=buffer_size)  
         self.batch_size = batch_size
-        self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
+        self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done", "TDerror"])
         self.seed = random.seed(seed)
     
-    def add(self, state, action, reward, next_state, done):
+    def add(self, state, action, reward, next_state, done, TDerror):
         """Add a new experience to memory."""
-        e = self.experience(state, action, reward, next_state, done)
+        e = self.experience(state, action, reward, next_state, done, TDerror)
         self.memory.append(e)
     
     def sample(self):
-        """Randomly sample a batch of experiences from memory."""
-        experiences = random.sample(self.memory, k=self.batch_size)
-
+        """Select sample prioritising error"""
+        #errors = np.array(self.memory)[:,-1]
+        errors = np.vstack([e.TDerror for e in self.memory if e is not None]).flatten()
+        probs = errors**FACTOR_A / np.sum(errors**FACTOR_A)
+        indices = np.random.choice(range(len(errors)),self.batch_size,replace=False,p=list(probs))
+        experiences = [self.memory[i] for i in indices]
+        
         states = torch.from_numpy(np.vstack([e.state for e in experiences if e is not None])).float().to(device)
         actions = torch.from_numpy(np.vstack([e.action for e in experiences if e is not None])).long().to(device)
         rewards = torch.from_numpy(np.vstack([e.reward for e in experiences if e is not None])).float().to(device)
         next_states = torch.from_numpy(np.vstack([e.next_state for e in experiences if e is not None])).float().to(device)
         dones = torch.from_numpy(np.vstack([e.done for e in experiences if e is not None]).astype(np.uint8)).float().to(device)
+        TDerrors = torch.from_numpy(np.vstack([e.TDerror for e in experiences if e is not None])).float().to(device)
   
-        return (states, actions, rewards, next_states, dones)
+        return (states, actions, rewards, next_states, dones, TDerrors)
 
     def __len__(self):
         """Return the current size of internal memory."""

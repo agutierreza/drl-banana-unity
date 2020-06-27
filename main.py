@@ -94,7 +94,7 @@ def dqn(n_episodes=1000, max_t=1000, eps_start=1.0, eps_end=0.01, eps_decay=0.99
             reward = env_info.rewards[0]                   # get the reward
             done = env_info.local_done[0]                  # see if episode has finished
             
-            agent.step(state, action, reward, next_state, done)
+            agent.step(state, action, reward, next_state, done, eps)
             state = next_state
             score += reward
             if done:
